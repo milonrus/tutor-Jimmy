@@ -1,10 +1,32 @@
 'use client';
 
 import { useState } from 'react';
+import ErrorHighlight from '@/components/ErrorHighlight';
+import CorrectionDisplay from '@/components/CorrectionDisplay';
+import SimpleCorrectionDisplay from '@/components/SimpleCorrectionDisplay';
+import DebugDisplay from '@/components/DebugDisplay';
+
+interface Correction {
+  original: string;
+  corrected: string;
+  type: string;
+  explanation?: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+interface CorrectionResponse {
+  correctedText: string;
+  corrections: Correction[];
+  _debug?: {
+    logFile: string | null;
+    timestamp: string;
+  };
+}
 
 export default function GrammarTutor() {
   const [text, setText] = useState('');
-  const [correctedText, setCorrectedText] = useState('');
+  const [correctionData, setCorrectionData] = useState<CorrectionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleCorrect = async () => {
@@ -21,7 +43,7 @@ export default function GrammarTutor() {
       });
 
       const data = await response.json();
-      setCorrectedText(data.correctedText);
+      setCorrectionData(data);
     } catch (error) {
       console.error('Error correcting text:', error);
     } finally {
@@ -29,9 +51,9 @@ export default function GrammarTutor() {
     }
   };
 
-  const copyToClipboard = async () => {
+  const copyToClipboard = async (textToCopy: string) => {
     try {
-      await navigator.clipboard.writeText(correctedText);
+      await navigator.clipboard.writeText(textToCopy);
     } catch (error) {
       console.error('Failed to copy text:', error);
     }
@@ -62,21 +84,33 @@ export default function GrammarTutor() {
           </button>
         </div>
 
-        {correctedText && (
+        {correctionData && (
           <div className="bg-white rounded-lg shadow-lg p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold text-gray-700">Corrected Text</h2>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-semibold text-gray-700">Results</h2>
               <button
-                onClick={copyToClipboard}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                onClick={() => copyToClipboard(correctionData.correctedText)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
-                Copy
+                Copy Corrected
               </button>
             </div>
-            <div
-              className="p-4 bg-gray-50 rounded-lg"
-              dangerouslySetInnerHTML={{ __html: correctedText }}
+
+            <div className="p-4 bg-gray-50 rounded-lg mb-6">
+              <h3 className="font-semibold text-gray-700 mb-3">Original Text with Highlighted Errors:</h3>
+              <ErrorHighlight text={text} corrections={correctionData.corrections} showCorrections={true} />
+            </div>
+
+            <SimpleCorrectionDisplay
+              originalText={text}
+              correctedText={correctionData.correctedText}
+              corrections={correctionData.corrections}
             />
+
+            {/* Debug Information */}
+            {correctionData._debug && (
+              <DebugDisplay debugInfo={correctionData._debug} />
+            )}
           </div>
         )}
       </div>
