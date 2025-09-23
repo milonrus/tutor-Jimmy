@@ -26,7 +26,8 @@ interface CorrectionRequest {
 async function logDebugInfo(data: Record<string, unknown>) {
   if (process.env.NODE_ENV === 'development') {
     try {
-      const logsDir = join(process.cwd(), 'logs');
+      // Use /tmp directory for production compatibility
+      const logsDir = join('/tmp', 'grammar-tutor-logs');
       await mkdir(logsDir, { recursive: true });
 
       const timestamp = new Date().toISOString();
@@ -38,7 +39,8 @@ async function logDebugInfo(data: Record<string, unknown>) {
       const logFile = join(logsDir, `grammar-correction-${new Date().toISOString().split('T')[0]}.log`);
       await writeFile(logFile, JSON.stringify(logEntry, null, 2) + '\n', { flag: 'a' });
     } catch (error) {
-      console.error('Failed to write debug log:', error);
+      // In production or if file writing fails, just log to console
+      console.error('Debug info (file write failed):', JSON.stringify(data, null, 2));
     }
   }
 }
@@ -295,23 +297,46 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Grammar correction API error:', error);
 
-    await logDebugInfo({
-      type: 'error',
-      error: error instanceof Error ? {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      } : error
-    });
+    // Safe logging that won't cause additional errors
+    try {
+      await logDebugInfo({
+        type: 'error',
+        error: error instanceof Error ? {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        } : error
+      });
+    } catch (logError) {
+      console.error('Failed to log error:', logError);
+    }
+
+    // More specific error messages based on error type
+    let errorMessage = 'Failed to process grammar correction';
+    let statusCode = 500;
+
+    if (error instanceof Error) {
+      if (error.message.includes('API key')) {
+        errorMessage = 'Configuration error: API key issue';
+        statusCode = 500;
+      } else if (error.message.includes('rate limit') || error.message.includes('quota')) {
+        errorMessage = 'Service temporarily unavailable due to rate limits';
+        statusCode = 429;
+      } else if (error.message.includes('network') || error.message.includes('timeout')) {
+        errorMessage = 'Network error: Please try again';
+        statusCode = 503;
+      }
+    }
 
     return NextResponse.json(
       {
-        error: 'Failed to process grammar correction',
+        error: errorMessage,
         debug: process.env.NODE_ENV === 'development' ? {
-          error: error instanceof Error ? error.message : 'Unknown error'
+          error: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined
         } : undefined
       },
-      { status: 500 }
+      { status: statusCode }
     );
   }
 }
