@@ -10,12 +10,11 @@ interface Correction {
 }
 
 interface SimpleCorrectionDisplayProps {
-  originalText: string;
   correctedText: string;
   corrections: Correction[];
 }
 
-export default function SimpleCorrectionDisplay({ originalText, correctedText, corrections }: SimpleCorrectionDisplayProps) {
+export default function SimpleCorrectionDisplay({ correctedText, corrections }: SimpleCorrectionDisplayProps) {
   const renderSimpleCorrections = () => {
     if (corrections.length === 0) {
       return (

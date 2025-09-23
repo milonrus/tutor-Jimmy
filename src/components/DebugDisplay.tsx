@@ -61,7 +61,7 @@ export default function DebugDisplay({ debugInfo }: DebugDisplayProps) {
                 💡 The debug log contains: input text, system prompt, OpenAI request/response, and processed output.
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                📁 Find the complete log file in your project's <code className="bg-gray-200 px-1 rounded">logs/</code> directory.
+                📁 Find the complete log file in your project&apos;s <code className="bg-gray-200 px-1 rounded">logs/</code> directory.
               </p>
             </div>
           </div>

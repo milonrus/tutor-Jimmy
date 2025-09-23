@@ -13,16 +13,15 @@ interface Correction {
 
 interface CorrectionDisplayProps {
   originalText: string;
-  correctedText: string;
   corrections: Correction[];
 }
 
-export default function CorrectionDisplay({ originalText, correctedText, corrections }: CorrectionDisplayProps) {
-  const [viewMode, setViewMode] = useState<'highlighted' | 'corrected' | 'side-by-side'>('highlighted');
+export default function CorrectionDisplay({ originalText, corrections }: CorrectionDisplayProps) {
+  const [viewMode, setViewMode] = useState<'highlighted' | 'details'>('highlighted');
 
   const renderCorrectionsWithStrikethrough = () => {
     if (corrections.length === 0) {
-      return <span>{originalText}</span>;
+      return <span className="whitespace-pre-wrap">{originalText}</span>;
     }
 
     const sortedCorrections = [...corrections].sort((a, b) => a.startIndex - b.startIndex);
@@ -33,7 +32,7 @@ export default function CorrectionDisplay({ originalText, correctedText, correct
       // Add text before the error
       if (correction.startIndex > currentIndex) {
         segments.push(
-          <span key={`text-${index}`}>
+          <span key={`text-${index}`} className="whitespace-pre-wrap">
             {originalText.slice(currentIndex, correction.startIndex)}
           </span>
         );
@@ -42,10 +41,10 @@ export default function CorrectionDisplay({ originalText, correctedText, correct
       // Add the correction with strikethrough and replacement
       segments.push(
         <span key={`correction-${index}`} className="inline">
-          <span className="line-through text-red-500 bg-red-50">
+          <span className="line-through text-red-500 bg-red-50 whitespace-pre-wrap">
             {correction.original}
           </span>
-          <span className="text-green-600 bg-green-50 ml-1 font-medium">
+          <span className="text-green-600 bg-green-50 ml-1 font-medium whitespace-pre-wrap">
             {correction.corrected}
           </span>
         </span>
@@ -57,7 +56,7 @@ export default function CorrectionDisplay({ originalText, correctedText, correct
     // Add remaining text
     if (currentIndex < originalText.length) {
       segments.push(
-        <span key="text-end">
+        <span key="text-end" className="whitespace-pre-wrap">
           {originalText.slice(currentIndex)}
         </span>
       );
@@ -111,60 +110,33 @@ export default function CorrectionDisplay({ originalText, correctedText, correct
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          Show Corrections
+          Show Errors
         </button>
         <button
-          onClick={() => setViewMode('corrected')}
+          onClick={() => setViewMode('details')}
           className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            viewMode === 'corrected'
+            viewMode === 'details'
               ? 'bg-blue-600 text-white'
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
           }`}
         >
-          Clean Text
-        </button>
-        <button
-          onClick={() => setViewMode('side-by-side')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            viewMode === 'side-by-side'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          Details
+          Error Details
         </button>
       </div>
 
       {/* Content Display */}
       {viewMode === 'highlighted' && (
         <div className="bg-gray-50 rounded-lg p-4">
-          <h3 className="font-semibold text-gray-700 mb-3">Text with Corrections:</h3>
+          <h3 className="font-semibold text-gray-700 mb-3">Original Text with Identified Errors:</h3>
           <div className="leading-relaxed">
             {renderCorrectionsWithStrikethrough()}
           </div>
         </div>
       )}
 
-      {viewMode === 'corrected' && (
-        <div className="bg-gray-50 rounded-lg p-4">
-          <h3 className="font-semibold text-gray-700 mb-3">Corrected Text:</h3>
-          <div className="leading-relaxed">
-            {correctedText}
-          </div>
-        </div>
-      )}
-
-      {viewMode === 'side-by-side' && (
-        <div className="space-y-6">
-          <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="font-semibold text-gray-700 mb-3">Corrected Text:</h3>
-            <div className="leading-relaxed">
-              {correctedText}
-            </div>
-          </div>
-          <div>
-            {renderCorrectionsList()}
-          </div>
+      {viewMode === 'details' && (
+        <div>
+          {renderCorrectionsList()}
         </div>
       )}
     </div>

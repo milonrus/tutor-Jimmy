@@ -1,48 +1,55 @@
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { generateObject } from 'ai';
+import { openai } from '@ai-sdk/openai';
 import { join } from 'path';
-import { createHash } from 'crypto';
+import { writeFile, mkdir } from 'fs/promises';
+import { DEFAULT_MODEL } from '@/config/openai-models';
+import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
+import {
+  Correction,
+  CorrectionResponse,
+  CorrectionResponseSchema,
+} from './schema';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+interface CorrectionRequest {
+  text: string;
+}
 
-const getGrammarPrompt = () => {
-  const promptPath = join(process.cwd(), 'src', 'prompts', 'grammar-correction.txt');
-  return readFileSync(promptPath, 'utf-8').trim();
-};
+function findPositions(originalText: string, corrections: Correction[]): Correction[] {
+  return corrections.map(correction => {
+    const index = originalText.indexOf(correction.original);
+    return {
+      ...correction,
+      startIndex: index !== -1 ? index : 0,
+      endIndex: index !== -1 ? index + correction.original.length : correction.original.length
+    };
+  });
+}
 
-const saveDebugLog = (debugData: any) => {
-  if (process.env.NODE_ENV !== 'development') return null;
+async function logDebugInfo(data: Record<string, unknown>) {
+  if (process.env.NODE_ENV === 'development') {
+    try {
+      const logsDir = join(process.cwd(), 'logs');
+      await mkdir(logsDir, { recursive: true });
 
-  try {
-    const logsDir = join(process.cwd(), 'logs');
+      const timestamp = new Date().toISOString();
+      const logEntry = {
+        timestamp,
+        ...data
+      };
 
-    // Ensure logs directory exists
-    if (!existsSync(logsDir)) {
-      mkdirSync(logsDir, { recursive: true });
+      const logFile = join(logsDir, `grammar-correction-${new Date().toISOString().split('T')[0]}.log`);
+      await writeFile(logFile, JSON.stringify(logEntry, null, 2) + '\n', { flag: 'a' });
+    } catch (error) {
+      console.error('Failed to write debug log:', error);
     }
-
-    // Create filename with timestamp and short hash
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const hash = createHash('md5').update(debugData.inputText + Date.now()).digest('hex').slice(0, 8);
-    const filename = `${timestamp}_${hash}.json`;
-    const filepath = join(logsDir, filename);
-
-    // Save debug data
-    writeFileSync(filepath, JSON.stringify(debugData, null, 2), 'utf-8');
-
-    return filename;
-  } catch (error) {
-    console.error('Failed to save debug log:', error);
-    return null;
   }
-};
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const { text } = await request.json();
+    const body = await request.json();
+    const { text }: CorrectionRequest = body;
 
     if (!text || typeof text !== 'string') {
       return NextResponse.json(
@@ -58,129 +65,70 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const systemPrompt = getGrammarPrompt();
-    const requestTimestamp = new Date().toISOString();
+    const systemPrompt = await getGrammarCorrectionPrompt();
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
-        {
-          role: 'user',
-          content: text,
-        },
-      ],
-      max_tokens: 1000,
-      temperature: 0.1,
+    await logDebugInfo({
+      type: 'request',
+      model: DEFAULT_MODEL,
+      inputText: text,
+      systemPrompt: systemPrompt.substring(0, 200) + '...'
     });
 
-    const responseContent = completion.choices[0]?.message?.content || text;
+    const result = await generateObject({
+      model: openai(DEFAULT_MODEL),
+      schema: CorrectionResponseSchema,
+      system: systemPrompt,
+      prompt: `Please analyze and correct the following text:\n\n${text}`,
+      maxOutputTokens: 800,
+    });
 
-    try {
-      // Try to parse the response as JSON
-      const correctionData = JSON.parse(responseContent);
-      console.log('OpenAI Response:', JSON.stringify(correctionData, null, 2));
+    await logDebugInfo({
+      type: 'openai_response',
+      model: DEFAULT_MODEL,
+      response: result.object,
+      usage: result.usage
+    });
 
-      // Add indices if missing
-      if (correctionData.corrections && Array.isArray(correctionData.corrections)) {
-        correctionData.corrections = correctionData.corrections.map((correction: any, index: number) => {
-          if (typeof correction.startIndex !== 'number' || typeof correction.endIndex !== 'number') {
-            // Find the position of this correction in the original text
-            const originalIndex = text.indexOf(correction.original);
-            return {
-              ...correction,
-              startIndex: originalIndex >= 0 ? originalIndex : index * 10,
-              endIndex: originalIndex >= 0 ? originalIndex + correction.original.length : (index * 10) + correction.original.length
-            };
-          }
-          return correction;
-        });
-      }
+    const parsedResponse: CorrectionResponse = result.object;
 
-      // Save debug log in development
-      const debugData = {
-        timestamp: requestTimestamp,
-        inputText: text,
-        systemPrompt: systemPrompt,
-        openAiRequest: {
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: text }
-          ],
-          max_tokens: 1000,
-          temperature: 0.1
-        },
-        openAiResponse: {
-          raw: responseContent,
-          parsed: correctionData,
-          usage: completion.usage
-        },
-        processedOutput: correctionData
-      };
+    const correctionsWithPositions = findPositions(text, parsedResponse.corrections);
 
-      const logFilename = saveDebugLog(debugData);
+    const response = {
+      corrections: correctionsWithPositions,
+      debug: process.env.NODE_ENV === 'development' ? {
+        model: DEFAULT_MODEL,
+        usage: result.usage,
+        originalCorrections: parsedResponse.corrections,
+        calculatedPositions: correctionsWithPositions.length !== parsedResponse.corrections.length
+      } : undefined
+    };
 
-      // Add debug info to response in development
-      if (process.env.NODE_ENV === 'development') {
-        correctionData._debug = {
-          logFile: logFilename,
-          timestamp: requestTimestamp
-        };
-      }
+    await logDebugInfo({
+      type: 'final_response',
+      response
+    });
 
-      return NextResponse.json(correctionData);
-    } catch {
-      // Fallback: if response is not JSON, return as plain corrected text
-      console.warn('Failed to parse JSON response, falling back to plain text');
+    return NextResponse.json(response);
 
-      const fallbackData = {
-        correctedText: responseContent,
-        corrections: []
-      };
-
-      // Save debug log even for fallback case
-      const debugData = {
-        timestamp: requestTimestamp,
-        inputText: text,
-        systemPrompt: systemPrompt,
-        openAiRequest: {
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: text }
-          ],
-          max_tokens: 1000,
-          temperature: 0.1
-        },
-        openAiResponse: {
-          raw: responseContent,
-          parsed: null,
-          parseError: 'Failed to parse as JSON',
-          usage: completion.usage
-        },
-        processedOutput: fallbackData
-      };
-
-      const logFilename = saveDebugLog(debugData);
-
-      // Add debug info to response in development
-      if (process.env.NODE_ENV === 'development') {
-        fallbackData._debug = {
-          logFile: logFilename,
-          timestamp: requestTimestamp
-        };
-      }
-
-      return NextResponse.json(fallbackData);
-    }
   } catch (error) {
-    console.error('Error correcting text:', error);
+    console.error('Grammar correction API error:', error);
+
+    await logDebugInfo({
+      type: 'error',
+      error: error instanceof Error ? {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      } : error
+    });
+
     return NextResponse.json(
-      { error: 'Failed to correct text' },
+      {
+        error: 'Failed to process grammar correction',
+        debug: process.env.NODE_ENV === 'development' ? {
+          error: error instanceof Error ? error.message : 'Unknown error'
+        } : undefined
+      },
       { status: 500 }
     );
   }
