@@ -37,7 +37,7 @@ export function parseXmlCorrections(xmlText: string): ParsedXmlResult {
 
     const corrections: Correction[] = [];
     const correctionElements = doc.querySelectorAll('correction');
-    let originalText = xmlText;
+    // const originalText = xmlText;
 
     // Extract corrections and calculate positions
     Array.from(correctionElements).forEach((element) => {
@@ -45,7 +45,7 @@ export function parseXmlCorrections(xmlText: string): ParsedXmlResult {
       const corrected = element.getAttribute('corrected') || '';
       const type = element.getAttribute('type') || 'unknown';
       const explanation = element.getAttribute('explanation') || undefined;
-      const textContent = element.textContent || '';
+      // const textContent = element.textContent || '';
 
       // Find the position of this correction in the original text
       const correctionXml = element.outerHTML;
@@ -70,7 +70,7 @@ export function parseXmlCorrections(xmlText: string): ParsedXmlResult {
     const cleanText = xmlText.replace(/<correction[^>]*>(.*?)<\/correction>/g, '$1');
 
     // Recalculate positions for clean text
-    const adjustedCorrections = recalculatePositions(cleanText, corrections, xmlText);
+    const adjustedCorrections = recalculatePositions(cleanText, corrections);
 
     return {
       correctedText: cleanText,
@@ -118,7 +118,7 @@ function parseXmlWithRegex(xmlText: string): ParsedXmlResult {
   };
 }
 
-function recalculatePositions(cleanText: string, corrections: Correction[], xmlText: string): Correction[] {
+function recalculatePositions(cleanText: string, corrections: Correction[]): Correction[] {
   return corrections.map(correction => {
     const index = cleanText.indexOf(correction.original);
     return {

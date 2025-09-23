@@ -7,9 +7,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { DEFAULT_MODEL, ReasoningEffort, getModelConfig } from '@/config/openai-models';
 import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
 import { parseXmlCorrections } from '@/lib/xmlCorrectionParser';
-import {
-  Correction,
-} from './schema';
+import './schema';
 
 const OPENAI_PROMPT_ID = process.env.OPENAI_PROMPT_ID ?? 'pmpt_68d1f6d23f388197946bfb143aa2fd1e00780713b8de1b8e';
 const OPENAI_PROMPT_VERSION = process.env.OPENAI_PROMPT_VERSION ?? '1';
@@ -126,11 +124,11 @@ export async function POST(request: NextRequest) {
 
     if (supportsReasoning) {
       const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const promptVariables: Record<string, string> = {
-        text,
-        instructions: systemPrompt,
-        reasoning_effort: resolvedReasoningEffort ?? 'medium'
-      };
+      // const promptVariables: Record<string, string> = {
+      //   text,
+      //   instructions: systemPrompt,
+      //   reasoning_effort: resolvedReasoningEffort ?? 'medium'
+      // };
 
       const reasoningInputMessages = usePromptTemplate
         ? [

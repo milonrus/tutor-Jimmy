@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ErrorHighlight from '@/components/ErrorHighlight';
 import DebugDisplay from '@/components/DebugDisplay';
 import ModelSelector from '@/components/ModelSelector';
@@ -21,7 +21,7 @@ interface CorrectionResponse {
   xmlText: string;
   debug?: {
     model: string;
-    usage: any;
+    usage: unknown;
     xmlResponse: string;
     parsedCorrections: number;
   };
@@ -62,7 +62,7 @@ export default function GrammarTutor() {
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Log management functions
-  const addStatusLog = (update: StatusUpdate, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
+  const addStatusLog = useCallback((update: StatusUpdate, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
     const now = Date.now();
     const timestamp = startTimeRef.current > 0 ? now - startTimeRef.current : 0;
 
@@ -86,7 +86,7 @@ export default function GrammarTutor() {
         logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
       }
     }, 100);
-  };
+  }, []);
 
   const clearStatusLogs = () => {
     setStatusLogs([]);
@@ -137,9 +137,9 @@ export default function GrammarTutor() {
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [text, isLoading]);
+  }, [text, isLoading, handleCorrect]);
 
-  const handleCorrect = async () => {
+  const handleCorrect = useCallback(async () => {
     if (!text.trim()) return;
 
     setIsLoading(true);
@@ -179,7 +179,7 @@ export default function GrammarTutor() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [text, selectedModel, reasoningEffort, addStatusLog]);
 
   const handleCancel = () => {
     if (eventSourceRef.current) {
@@ -193,13 +193,6 @@ export default function GrammarTutor() {
     addStatusLog({ step: 0, totalSteps: 8, message: 'Cancelled', details: 'Request was cancelled by user' }, 'warning');
   };
 
-  const copyToClipboard = async (textToCopy: string) => {
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-    } catch (error) {
-      console.error('Failed to copy text:', error);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
