@@ -16,7 +16,17 @@ export interface ModelConfig {
   outputPricing: string; // per 1M tokens
   description: string;
   capabilities: string[];
+  supportsReasoning?: boolean;
 }
+
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+
+export const REASONING_EFFORT_OPTIONS: Array<{value: ReasoningEffort, label: string, description: string}> = [
+  { value: 'minimal', label: 'Minimal', description: 'Fast response with basic reasoning' },
+  { value: 'low', label: 'Low', description: 'Quick reasoning for simple tasks' },
+  { value: 'medium', label: 'Medium', description: 'Balanced reasoning and speed' },
+  { value: 'high', label: 'High', description: 'Deep reasoning for complex tasks' }
+];
 
 export const OPENAI_MODELS: Record<string, ModelConfig> = {
   // GPT-5 models
@@ -27,7 +37,8 @@ export const OPENAI_MODELS: Record<string, ModelConfig> = {
     inputPricing: '$10.00',
     outputPricing: '$30.00',
     description: 'Latest and most advanced GPT-5 model with enhanced reasoning',
-    capabilities: ['text', 'vision', 'function-calling', 'json-mode', 'advanced-reasoning']
+    capabilities: ['text', 'vision', 'function-calling', 'json-mode', 'advanced-reasoning'],
+    supportsReasoning: true
   },
   'gpt-5-mini': {
     id: 'gpt-5-mini',
@@ -123,7 +134,7 @@ export const MODEL_RECOMMENDATIONS = {
  * Default model for grammar correction
  * Change this to switch models for the grammar correction API
  */
-export const DEFAULT_MODEL: string = 'gpt-4o-mini';
+export const DEFAULT_MODEL: string = 'gpt-5';
 
 /**
  * Get model configuration by ID

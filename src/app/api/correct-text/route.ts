@@ -1,30 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateObject } from 'ai';
+import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
+import OpenAI from 'openai';
 import { join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
-import { DEFAULT_MODEL } from '@/config/openai-models';
+import { DEFAULT_MODEL, ReasoningEffort, getModelConfig } from '@/config/openai-models';
 import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
+import { parseXmlCorrections } from '@/lib/xmlCorrectionParser';
 import {
   Correction,
-  CorrectionResponse,
-  CorrectionResponseSchema,
 } from './schema';
+
+const OPENAI_PROMPT_ID = process.env.OPENAI_PROMPT_ID ?? 'pmpt_68d1f6d23f388197946bfb143aa2fd1e00780713b8de1b8e';
+const OPENAI_PROMPT_VERSION = process.env.OPENAI_PROMPT_VERSION ?? '1';
+const OPENAI_PROMPT_VARIABLE_KEYS = (process.env.OPENAI_PROMPT_VARIABLE_KEYS ?? '')
+  .split(',')
+  .map(key => key.trim())
+  .filter(key => key.length > 0);
 
 interface CorrectionRequest {
   text: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
-function findPositions(originalText: string, corrections: Correction[]): Correction[] {
-  return corrections.map(correction => {
-    const index = originalText.indexOf(correction.original);
-    return {
-      ...correction,
-      startIndex: index !== -1 ? index : 0,
-      endIndex: index !== -1 ? index + correction.original.length : correction.original.length
-    };
-  });
-}
 
 async function logDebugInfo(data: Record<string, unknown>) {
   if (process.env.NODE_ENV === 'development') {
@@ -49,7 +48,7 @@ async function logDebugInfo(data: Record<string, unknown>) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { text }: CorrectionRequest = body;
+    const { text, model: requestedModel, reasoningEffort }: CorrectionRequest = body;
 
     if (!text || typeof text !== 'string') {
       return NextResponse.json(
@@ -65,41 +64,226 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const selectedModelId = typeof requestedModel === 'string' && getModelConfig(requestedModel)
+      ? requestedModel
+      : DEFAULT_MODEL;
+
+    const selectedModelConfig = getModelConfig(selectedModelId);
+    const supportsReasoning = Boolean(selectedModelConfig?.supportsReasoning);
+
+    const validReasoningEfforts: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high'];
+    const requestedEffortIsValid = typeof reasoningEffort === 'string'
+      && (validReasoningEfforts as string[]).includes(reasoningEffort);
+
+    const resolvedReasoningEffort: ReasoningEffort | undefined = supportsReasoning
+      ? (requestedEffortIsValid ? reasoningEffort : 'medium')
+      : undefined;
+
+    const promptId = supportsReasoning ? OPENAI_PROMPT_ID?.trim() : undefined;
+    const promptVersion = supportsReasoning ? OPENAI_PROMPT_VERSION?.trim() : undefined;
+    const usePromptTemplate = Boolean(promptId);
+
     const systemPrompt = await getGrammarCorrectionPrompt();
+
+    const availablePromptVariableValues: Record<string, string> = {
+      text,
+      instructions: systemPrompt,
+      reasoning_effort: resolvedReasoningEffort ?? 'medium'
+    };
+
+    const promptVariables = OPENAI_PROMPT_VARIABLE_KEYS.reduce<Record<string, string>>((acc, entry) => {
+      const [variableNameRaw, sourceKeyRaw] = entry.split(':');
+      const variableName = (variableNameRaw ?? '').trim();
+      const sourceKey = (sourceKeyRaw ?? variableNameRaw ?? '').trim();
+
+      if (!variableName) {
+        return acc;
+      }
+
+      const value = availablePromptVariableValues[sourceKey as keyof typeof availablePromptVariableValues];
+      if (typeof value === 'string') {
+        acc[variableName] = value;
+      }
+
+      return acc;
+    }, {});
+
+    const promptVariablesProvided = Object.keys(promptVariables).length > 0 ? promptVariables : undefined;
 
     await logDebugInfo({
       type: 'request',
-      model: DEFAULT_MODEL,
+      model: selectedModelId,
+      reasoningEffort: resolvedReasoningEffort,
       inputText: text,
-      systemPrompt: systemPrompt.substring(0, 200) + '...'
+      systemPrompt: systemPrompt.substring(0, 200) + '...',
+      promptId: usePromptTemplate ? promptId : undefined,
+      promptVersion: usePromptTemplate ? promptVersion : undefined,
+      promptVariables: promptVariablesProvided ? Object.keys(promptVariablesProvided) : undefined
     });
 
-    const result = await generateObject({
-      model: openai(DEFAULT_MODEL),
-      schema: CorrectionResponseSchema,
-      system: systemPrompt,
-      prompt: `Please analyze and correct the following text:\n\n${text}`,
-      maxOutputTokens: 800,
-    });
+    let xmlText = '';
+    let usage: unknown;
 
-    await logDebugInfo({
-      type: 'openai_response',
-      model: DEFAULT_MODEL,
-      response: result.object,
-      usage: result.usage
-    });
+    if (supportsReasoning) {
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const promptVariables: Record<string, string> = {
+        text,
+        instructions: systemPrompt,
+        reasoning_effort: resolvedReasoningEffort ?? 'medium'
+      };
 
-    const parsedResponse: CorrectionResponse = result.object;
+      const reasoningInputMessages = usePromptTemplate
+        ? [
+            {
+              role: 'user' as const,
+              content: [
+                {
+                  type: 'input_text' as const,
+                  text
+                }
+              ]
+            }
+          ]
+        : [
+            {
+              role: 'system' as const,
+              content: [
+                {
+                  type: 'input_text' as const,
+                  text: systemPrompt
+                }
+              ]
+            },
+            {
+              role: 'user' as const,
+              content: [
+                {
+                  type: 'input_text' as const,
+                  text: `Please analyze and correct the following text:\n\n${text}`
+                }
+              ]
+            }
+          ];
 
-    const correctionsWithPositions = findPositions(text, parsedResponse.corrections);
+      const response = await client.responses.create({
+        model: selectedModelId,
+        reasoning: resolvedReasoningEffort ? { effort: resolvedReasoningEffort } : undefined,
+        prompt: usePromptTemplate ? {
+          id: promptId!,
+          ...(promptVersion ? { version: promptVersion } : {}),
+          variables: promptVariablesProvided
+        } : undefined,
+        input: reasoningInputMessages
+      });
+
+      type ResponseOutput = {
+        output_text?: string | null;
+        output?: Array<{
+          content?: Array<{
+            type?: string;
+            text?: string;
+          }>;
+        }>;
+        usage?: unknown;
+        prompt_response?: unknown;
+      };
+
+      const responseData = JSON.parse(JSON.stringify(response)) as ResponseOutput;
+
+      const aggregatedText = responseData.output_text ?? '';
+      if (aggregatedText.trim().length > 0) {
+        xmlText = aggregatedText.trim();
+      } else if (Array.isArray(responseData.output)) {
+        const extractPartText = (part: unknown): string => {
+          if (!part || typeof part !== 'object') {
+            return '';
+          }
+
+          const candidate = part as { type?: unknown; text?: unknown; content?: unknown; additional_text?: unknown };
+          const { type } = candidate;
+
+          const maybeText = (value: unknown) => typeof value === 'string' ? value : '';
+
+          if (type === 'output_text' || type === 'text' || type === 'reasoning' || type === 'summary_text') {
+            const direct = maybeText(candidate.text);
+            if (direct) {
+              return direct;
+            }
+
+            if (Array.isArray(candidate.content)) {
+              return candidate.content.map(extractPartText).join('');
+            }
+
+            return maybeText(candidate.additional_text);
+          }
+
+          if (Array.isArray(candidate.content)) {
+            return candidate.content.map(extractPartText).join('');
+          }
+
+          return '';
+        };
+
+        const fallback = responseData.output
+          .flatMap(item => Array.isArray(item.content) ? item.content : [])
+          .map(part => extractPartText(part))
+          .join('')
+          .trim();
+        xmlText = fallback;
+      }
+
+      usage = responseData.usage;
+
+      await logDebugInfo({
+        type: 'openai_raw_response',
+        model: selectedModelId,
+        reasoningEffort: resolvedReasoningEffort,
+        response: responseData
+      });
+
+      await logDebugInfo({
+        type: 'openai_response',
+        model: selectedModelId,
+        reasoningEffort: resolvedReasoningEffort,
+        response: xmlText,
+        usage: responseData.usage
+      });
+    } else {
+      const result = await generateText({
+        model: openai(selectedModelId),
+        system: systemPrompt,
+        prompt: `Please analyze and correct the following text:\n\n${text}`,
+        providerOptions: resolvedReasoningEffort ? {
+          openai: {
+            reasoningEffort: resolvedReasoningEffort
+          }
+        } : undefined,
+      });
+
+      xmlText = result.text.trim();
+      usage = result.usage;
+
+      await logDebugInfo({
+        type: 'openai_response',
+        model: selectedModelId,
+        reasoningEffort: resolvedReasoningEffort,
+        response: xmlText,
+        usage: result.usage
+      });
+    }
+
+    const parsedResult = parseXmlCorrections(xmlText);
 
     const response = {
-      corrections: correctionsWithPositions,
+      corrections: parsedResult.corrections,
+      originalText: parsedResult.originalText,
+      xmlText: xmlText,
       debug: process.env.NODE_ENV === 'development' ? {
-        model: DEFAULT_MODEL,
-        usage: result.usage,
-        originalCorrections: parsedResponse.corrections,
-        calculatedPositions: correctionsWithPositions.length !== parsedResponse.corrections.length
+        model: selectedModelId,
+        reasoningEffort: resolvedReasoningEffort,
+        usage,
+        xmlResponse: xmlText,
+        parsedCorrections: parsedResult.corrections.length
       } : undefined
     };
 
