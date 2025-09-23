@@ -1,0 +1,25 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rules for corrections collection
+    match /corrections/{document} {
+      // Allow users to read and write only their own corrections
+      allow read, write: if request.auth != null &&
+        resource.data.userId == request.auth.uid;
+
+      // Allow creation if the document has the correct userId
+      allow create: if request.auth != null &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.keys().hasAll([
+          'userId', 'originalText', 'correctedText',
+          'corrections', 'model', 'timestamp', 'createdAt'
+        ]);
+    }
+
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -7,6 +7,9 @@ import { writeFile, mkdir } from 'fs/promises';
 import { DEFAULT_MODEL, ReasoningEffort, getModelConfig } from '@/config/openai-models';
 import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
 import { parseXmlCorrections } from '@/lib/xmlCorrectionParser';
+import { calculateCost, type TokenUsage, type CostBreakdown } from '@/lib/costCalculator';
+import { db } from '@/lib/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import './schema';
 
 const OPENAI_PROMPT_ID = process.env.OPENAI_PROMPT_ID ?? 'pmpt_68d1f6d23f388197946bfb143aa2fd1e00780713b8de1b8e';
@@ -20,6 +23,7 @@ interface CorrectionRequest {
   text: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  userId?: string;
 }
 
 
@@ -41,6 +45,7 @@ async function logDebugInfo(data: Record<string, unknown>) {
     } catch (error) {
       // In production or if file writing fails, just log to console
       console.error('Debug info (file write failed):', JSON.stringify(data, null, 2));
+      console.error('Error details:', error);
     }
   }
 }
@@ -48,7 +53,7 @@ async function logDebugInfo(data: Record<string, unknown>) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { text, model: requestedModel, reasoningEffort }: CorrectionRequest = body;
+    const { text, model: requestedModel, reasoningEffort, userId }: CorrectionRequest = body;
 
     if (!text || typeof text !== 'string') {
       return NextResponse.json(
@@ -286,6 +291,84 @@ export async function POST(request: NextRequest) {
         parsedCorrections: parsedResult.corrections.length
       } : undefined
     };
+
+    // Calculate cost breakdown from token usage
+    let costBreakdown: CostBreakdown | null = null;
+    try {
+      if (usage && typeof usage === 'object' && usage !== null) {
+        // Debug log the usage object structure
+        await logDebugInfo({
+          type: 'usage_object_debug',
+          usage,
+          model: selectedModelId,
+          usageKeys: Object.keys(usage)
+        });
+
+        const tokenUsage = usage as TokenUsage;
+        costBreakdown = calculateCost(tokenUsage, selectedModelId);
+
+        await logDebugInfo({
+          type: 'cost_calculation_success',
+          costBreakdown,
+          model: selectedModelId
+        });
+      }
+    } catch (error) {
+      console.error('Error calculating cost:', error);
+      await logDebugInfo({
+        type: 'cost_calculation_error',
+        error: error instanceof Error ? error.message : 'Unknown cost calculation error',
+        usage,
+        model: selectedModelId
+      });
+    }
+
+    // Save to Firestore if user is authenticated (save all attempts, not just those with corrections)
+    if (userId) {
+      try {
+        const firestoreData = {
+          userId,
+          originalText: text,
+          correctedText: xmlText,
+          corrections: parsedResult.corrections,
+          model: selectedModelId,
+          ...(resolvedReasoningEffort && { reasoningEffort: resolvedReasoningEffort }),
+          timestamp: serverTimestamp(),
+          createdAt: serverTimestamp(),
+          // Add cost and token data
+          ...(costBreakdown && {
+            inputTokens: costBreakdown.inputTokens,
+            outputTokens: costBreakdown.outputTokens,
+            totalTokens: costBreakdown.totalTokens,
+            inputCostUSD: costBreakdown.inputCostUSD,
+            outputCostUSD: costBreakdown.outputCostUSD,
+            totalCostUSD: costBreakdown.totalCostUSD
+          })
+        };
+
+        await addDoc(collection(db, 'corrections'), firestoreData);
+
+        await logDebugInfo({
+          type: 'firestore_save',
+          userId,
+          correctionsCount: parsedResult.corrections.length,
+          costBreakdown,
+          saved: true
+        });
+      } catch (firestoreError) {
+        console.error('Error saving to Firestore:', firestoreError);
+        await logDebugInfo({
+          type: 'firestore_error',
+          error: firestoreError instanceof Error ? firestoreError.message : 'Unknown Firestore error'
+        });
+      }
+    } else {
+      await logDebugInfo({
+        type: 'firestore_skip',
+        reason: 'No userId provided',
+        userId: userId || 'undefined'
+      });
+    }
 
     await logDebugInfo({
       type: 'final_response',

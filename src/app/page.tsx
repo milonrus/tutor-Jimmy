@@ -4,7 +4,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ErrorHighlight from '@/components/ErrorHighlight';
 import DebugDisplay from '@/components/DebugDisplay';
 import ModelSelector from '@/components/ModelSelector';
+import AuthButtons from '@/components/AuthButtons';
 import { DEFAULT_MODEL, OPENAI_MODELS, ReasoningEffort } from '@/config/openai-models';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Correction {
   original: string;
@@ -46,6 +48,7 @@ interface StatusLogEntry {
 }
 
 export default function GrammarTutor() {
+  const { user } = useAuth();
   const [text, setText] = useState('');
   const [correctionData, setCorrectionData] = useState<CorrectionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -143,7 +146,8 @@ export default function GrammarTutor() {
         body: JSON.stringify({
           text,
           model: selectedModel,
-          reasoningEffort: supportsReasoning ? reasoningEffort : undefined
+          reasoningEffort: supportsReasoning ? reasoningEffort : undefined,
+          userId: user?.uid
         }),
       });
 
@@ -162,7 +166,7 @@ export default function GrammarTutor() {
     } finally {
       setIsLoading(false);
     }
-  }, [text, selectedModel, reasoningEffort, addStatusLog]);
+  }, [text, selectedModel, reasoningEffort, addStatusLog, user?.uid]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -198,8 +202,16 @@ export default function GrammarTutor() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Grammar Tutor</h1>
-          <p className="text-gray-600">Improve your writing with AI-powered grammar corrections</p>
+          <div className="flex justify-between items-start mb-4">
+            <div className="flex-1"></div>
+            <div className="flex-1 text-center">
+              <h1 className="text-4xl font-bold text-gray-800 mb-2">Grammar Tutor</h1>
+              <p className="text-gray-600">Improve your writing with AI-powered grammar corrections</p>
+            </div>
+            <div className="flex-1 flex justify-end">
+              <AuthButtons />
+            </div>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
