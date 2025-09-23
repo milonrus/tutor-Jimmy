@@ -34,7 +34,7 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
 
   const renderTextWithHighlights = () => {
     if (corrections.length === 0) {
-      return <span>{text}</span>;
+      return <span className="text-gray-800">{text}</span>;
     }
 
     // Sort corrections by start index to process them in order
@@ -56,7 +56,7 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
         // Add text before the error
         if (expectedPosition > 0) {
           segments.push(
-            <span key={`text-${index}`}>
+            <span key={`text-${index}`} className="text-gray-800">
               {remainingText.slice(0, expectedPosition)}
             </span>
           );
@@ -101,7 +101,7 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
           // Add text before the found error
           if (foundIndex > 0) {
             segments.push(
-              <span key={`text-${index}`}>
+              <span key={`text-${index}`} className="text-gray-800">
                 {remainingText.slice(0, foundIndex)}
               </span>
             );
@@ -149,7 +149,7 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
     // Add remaining text after the last error
     if (remainingText.length > 0) {
       segments.push(
-        <span key="text-end">
+        <span key="text-end" className="text-gray-800">
           {remainingText}
         </span>
       );
