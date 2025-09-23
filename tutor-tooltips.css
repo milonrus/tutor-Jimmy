@@ -1,0 +1,88 @@
+/* === Tutor Tooltips for Obsidian (FINAL) ===
+   Place this file in: Settings → Appearance → CSS snippets
+   Then toggle it on.
+   This version supports:
+   - RED for standard corrections (.tutor-corr)
+   - BLUE for natural-phrasing corrections (.tutor-natural)
+*/
+
+/* ---------- Base: inline correction styles ---------- */
+/* Standard corrections: red text */
+.tutor-corr {
+  color: #b00000;                 /* red text (teacher's pen) */
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+  position: relative;
+  text-decoration: none;          /* keep it clean even inside links */
+}
+
+/* Natural phrasing corrections: blue text */
+.tutor-natural {
+  color: #0066cc;                 /* blue for natural phrasing fixes */
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+  position: relative;
+  text-decoration: none;
+}
+
+/* ---------- Shared tooltip behavior ---------- */
+.tutor-corr::after,
+.tutor-natural::after {
+  opacity: 0;
+  transition: opacity 120ms ease-in-out;
+  pointer-events: none;
+}
+
+/* Tooltip bubble on hover (shared layout) */
+.tutor-corr:hover::after,
+.tutor-natural:hover::after {
+  content: attr(data-note);
+  position: absolute;
+  left: 0;
+  top: 1.6em;
+  min-width: 18rem;               /* comfortable base width */
+  max-width: 44rem;               /* generous width; see desktop override below */
+  padding: 8px 10px;
+  background: var(--background-primary, #ffffff);
+  border: 1px solid var(--background-modifier-border, #e0e0e0);
+  box-shadow: 0 2px 12px rgba(0,0,0,.10);
+  border-radius: 8px;
+  z-index: 1000;
+  white-space: normal;
+  line-height: 1.4;
+  opacity: 1;
+}
+
+/* Tooltip text color by type */
+.tutor-corr:hover::after {
+  color: #b00000;                 /* red tooltip text */
+}
+.tutor-natural:hover::after {
+  color: #0066cc;                 /* blue tooltip text */
+}
+
+/* ---------- Container safety ---------- */
+/* Prevent tooltip from getting cut off in narrow containers */
+.markdown-reading-view, .markdown-preview-view {
+  overflow: visible;
+}
+
+/* Desktop: allow even wider notes if you want */
+@media (min-width: 900px) {
+  .tutor-corr:hover::after,
+  .tutor-natural:hover::after {
+    max-width: 48rem;
+  }
+}
+
+/* ---------- Print styles ---------- */
+@media print {
+  .tutor-corr,
+  .tutor-natural {
+    border-bottom: none;          /* clean print output */
+  }
+  .tutor-corr::after,
+  .tutor-natural::after {
+    display: none !important;     /* hide tooltips when printing */
+  }
+}
