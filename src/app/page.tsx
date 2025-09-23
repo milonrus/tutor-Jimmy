@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ErrorHighlight from '@/components/ErrorHighlight';
 import DebugDisplay from '@/components/DebugDisplay';
 import ModelSelector from '@/components/ModelSelector';
-import { DEFAULT_MODEL } from '@/config/openai-models';
+import { DEFAULT_MODEL, OPENAI_MODELS, ReasoningEffort } from '@/config/openai-models';
 
 interface Correction {
   original: string;
@@ -17,9 +17,13 @@ interface Correction {
 
 interface CorrectionResponse {
   corrections: Correction[];
-  _debug?: {
-    logFile: string | null;
-    timestamp: string;
+  originalText: string;
+  xmlText: string;
+  debug?: {
+    model: string;
+    usage: unknown;
+    xmlResponse: string;
+    parsedCorrections: number;
   };
 }
 
@@ -50,6 +54,7 @@ export default function GrammarTutor() {
   const [statusLogs, setStatusLogs] = useState<StatusLogEntry[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [totalSteps, setTotalSteps] = useState(8);
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('minimal');
   const abortControllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -57,7 +62,7 @@ export default function GrammarTutor() {
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Log management functions
-  const addStatusLog = (update: StatusUpdate, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
+  const addStatusLog = useCallback((update: StatusUpdate, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
     const now = Date.now();
     const timestamp = startTimeRef.current > 0 ? now - startTimeRef.current : 0;
 
@@ -81,7 +86,7 @@ export default function GrammarTutor() {
         logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
       }
     }, 100);
-  };
+  }, []);
 
   const clearStatusLogs = () => {
     setStatusLogs([]);
@@ -117,96 +122,64 @@ export default function GrammarTutor() {
     };
   }, [isLoading]);
 
-  const handleCorrect = async () => {
+  const handleCorrect = useCallback(async () => {
     if (!text.trim()) return;
 
     setIsLoading(true);
     setElapsedTime(0);
     clearStatusLogs();
     startTimeRef.current = Date.now();
-    addStatusLog({ step: 0, totalSteps: 8, message: 'Initializing...', details: 'Starting grammar correction process' }, 'info');
-
-    // Close any existing EventSource connection
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
+    addStatusLog({ step: 1, totalSteps: 3, message: 'Sending request...', details: 'Sending text to grammar correction API' }, 'info');
 
     try {
-      // Create a unique request ID for this correction
-      const requestId = Date.now().toString();
+      addStatusLog({ step: 2, totalSteps: 3, message: 'Processing...', details: 'AI is analyzing your text for grammar errors' }, 'info');
 
-      // Send the initial request to start the streaming process
-      const response = await fetch('/api/correct-text/stream', {
+      const supportsReasoning = Boolean(OPENAI_MODELS[selectedModel]?.supportsReasoning);
+      const response = await fetch('/api/correct-text', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text, model: selectedModel, requestId }),
+        body: JSON.stringify({
+          text,
+          model: selectedModel,
+          reasoningEffort: supportsReasoning ? reasoningEffort : undefined
+        }),
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      // Create EventSource to receive status updates
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body reader available');
-      }
+      const data: CorrectionResponse = await response.json();
+      setCorrectionData(data);
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-
-                if (data.type === 'result') {
-                  // Final result received
-                  setCorrectionData(data.data);
-                  addStatusLog({ step: 8, totalSteps: 8, message: 'Complete!', details: `Found ${data.data.corrections.length} corrections` }, 'success');
-                } else if (data.step && data.message) {
-                  // Status update received
-                  const logType = data.message.toLowerCase().includes('error') ? 'error' :
-                               data.message.toLowerCase().includes('complete') ? 'success' : 'info';
-                  addStatusLog(data, logType);
-                }
-              } catch (parseError) {
-                console.error('Error parsing SSE data:', parseError);
-              }
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      addStatusLog({ step: 3, totalSteps: 3, message: 'Complete!', details: `Found ${data.corrections.length} corrections` }, 'success');
 
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('Request was cancelled');
-        addStatusLog({ step: 0, totalSteps: 8, message: 'Cancelled', details: 'Request was cancelled by user' }, 'warning');
-      } else {
-        console.error('Error correcting text:', error);
-        addStatusLog({ step: 0, totalSteps: 8, message: 'Error', details: error instanceof Error ? error.message : 'Unknown error occurred' }, 'error');
-      }
+      console.error('Error correcting text:', error);
+      addStatusLog({ step: 0, totalSteps: 3, message: 'Error', details: error instanceof Error ? error.message : 'Unknown error occurred' }, 'error');
     } finally {
       setIsLoading(false);
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
     }
-  };
+  }, [text, selectedModel, reasoningEffort, addStatusLog]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        if (text.trim() && !isLoading) {
+          handleCorrect();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [text, isLoading, handleCorrect]);
 
   const handleCancel = () => {
     if (eventSourceRef.current) {
@@ -220,13 +193,6 @@ export default function GrammarTutor() {
     addStatusLog({ step: 0, totalSteps: 8, message: 'Cancelled', details: 'Request was cancelled by user' }, 'warning');
   };
 
-  const copyToClipboard = async (textToCopy: string) => {
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-    } catch (error) {
-      console.error('Failed to copy text:', error);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
@@ -251,7 +217,14 @@ export default function GrammarTutor() {
             <div className="lg:col-span-1">
               <ModelSelector
                 selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
+                onModelChange={(modelId) => {
+                  setSelectedModel(modelId);
+                  if (!OPENAI_MODELS[modelId]?.supportsReasoning) {
+                    setReasoningEffort('medium');
+                  }
+                }}
+                reasoningEffort={reasoningEffort}
+                onReasoningChange={setReasoningEffort}
               />
             </div>
           </div>
@@ -370,12 +343,12 @@ export default function GrammarTutor() {
 
             <div className="p-4 bg-gray-50 rounded-lg mb-6">
               <h3 className="font-semibold text-gray-700 mb-3">Text with Highlighted Errors:</h3>
-              <ErrorHighlight text={text} corrections={correctionData.corrections || []} showCorrections={true} />
+              <ErrorHighlight text={correctionData.originalText || text} corrections={correctionData.corrections || []} showCorrections={true} />
             </div>
 
             {/* Debug Information */}
-            {correctionData._debug && (
-              <DebugDisplay debugInfo={correctionData._debug} />
+            {correctionData.debug && (
+              <DebugDisplay debugInfo={correctionData.debug} xmlText={correctionData.xmlText} />
             )}
           </div>
         )}

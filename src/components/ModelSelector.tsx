@@ -1,15 +1,24 @@
 'use client';
 
-import { OPENAI_MODELS, MODEL_RECOMMENDATIONS } from '@/config/openai-models';
+import { OPENAI_MODELS, MODEL_RECOMMENDATIONS, REASONING_EFFORT_OPTIONS, ReasoningEffort } from '@/config/openai-models';
 
 interface ModelSelectorProps {
   selectedModel: string;
   onModelChange: (modelId: string) => void;
+  reasoningEffort?: ReasoningEffort;
+  onReasoningChange?: (effort: ReasoningEffort) => void;
   className?: string;
 }
 
-export default function ModelSelector({ selectedModel, onModelChange, className = '' }: ModelSelectorProps) {
+export default function ModelSelector({
+  selectedModel,
+  onModelChange,
+  reasoningEffort = 'medium',
+  onReasoningChange,
+  className = ''
+}: ModelSelectorProps) {
   const grammarModels = MODEL_RECOMMENDATIONS.grammarCorrection;
+  const supportsReasoning = Boolean(OPENAI_MODELS[selectedModel]?.supportsReasoning);
 
   return (
     <div className={`space-y-3 ${className}`}>
@@ -59,6 +68,29 @@ export default function ModelSelector({ selectedModel, onModelChange, className 
             <span>Input: {OPENAI_MODELS[selectedModel].inputPricing}/1M</span>
             <span>Output: {OPENAI_MODELS[selectedModel].outputPricing}/1M</span>
           </div>
+        </div>
+      )}
+
+      {supportsReasoning && onReasoningChange && (
+        <div className="space-y-2">
+          <label htmlFor="reasoning-select" className="block text-sm font-medium text-gray-700">
+            Reasoning Effort
+          </label>
+          <select
+            id="reasoning-select"
+            value={reasoningEffort}
+            onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
+            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+          >
+            {REASONING_EFFORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500">
+            {REASONING_EFFORT_OPTIONS.find((option) => option.value === reasoningEffort)?.description}
+          </p>
         </div>
       )}
     </div>
