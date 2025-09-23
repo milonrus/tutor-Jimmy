@@ -241,3 +241,5 @@ service cloud.firestore {
 - **Security reviews**: Code reviews with security focus for sensitive changes
 - **Team security training**: Regular training on secure coding practices
 - when you updated the code and a user needs to test the feature, launch the app and explain user how to see the changes
+- launch the app in the browser after every change
+- make sure to always commit to github every time you deply changes to production
