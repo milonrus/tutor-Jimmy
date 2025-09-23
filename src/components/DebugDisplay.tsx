@@ -3,24 +3,23 @@
 import { useState } from 'react';
 
 interface DebugInfo {
-  logFile: string | null;
-  timestamp: string;
+  model: string;
+  usage: unknown;
+  xmlResponse: string;
+  parsedCorrections: number;
 }
 
 interface DebugDisplayProps {
   debugInfo: DebugInfo;
+  xmlText: string;
 }
 
-export default function DebugDisplay({ debugInfo }: DebugDisplayProps) {
+export default function DebugDisplay({ debugInfo, xmlText }: DebugDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  if (!debugInfo || !debugInfo.logFile) {
+  if (!debugInfo) {
     return null;
   }
-
-  const formatTimestamp = (timestamp: string) => {
-    return new Date(timestamp).toLocaleString();
-  };
 
   return (
     <div className="mt-4 bg-gray-100 border border-gray-300 rounded-lg overflow-hidden">
@@ -43,25 +42,36 @@ export default function DebugDisplay({ debugInfo }: DebugDisplayProps) {
         <div className="p-4 bg-white border-t border-gray-300">
           <div className="space-y-3">
             <div className="flex justify-between items-center">
-              <span className="text-sm font-medium text-gray-600">Request Timestamp:</span>
+              <span className="text-sm font-medium text-gray-600">Model Used:</span>
               <span className="text-sm text-gray-800 font-mono">
-                {formatTimestamp(debugInfo.timestamp)}
+                {debugInfo.model}
               </span>
             </div>
 
             <div className="flex justify-between items-center">
-              <span className="text-sm font-medium text-gray-600">Debug Log File:</span>
-              <span className="text-sm text-gray-800 font-mono bg-gray-100 px-2 py-1 rounded">
-                logs/{debugInfo.logFile}
+              <span className="text-sm font-medium text-gray-600">Corrections Found:</span>
+              <span className="text-sm text-gray-800 font-mono">
+                {debugInfo.parsedCorrections}
               </span>
             </div>
 
             <div className="pt-2 border-t border-gray-200">
+              <span className="text-sm font-medium text-gray-600">XML Response:</span>
+              <pre className="text-xs text-gray-800 font-mono bg-gray-100 p-2 rounded mt-1 max-h-40 overflow-y-auto">
+                {debugInfo.xmlResponse}
+              </pre>
+            </div>
+
+            <div className="pt-2 border-t border-gray-200">
+              <span className="text-sm font-medium text-gray-600">Processed XML:</span>
+              <pre className="text-xs text-gray-800 font-mono bg-gray-100 p-2 rounded mt-1 max-h-40 overflow-y-auto">
+                {xmlText}
+              </pre>
+            </div>
+
+            <div className="pt-2 border-t border-gray-200">
               <p className="text-xs text-gray-500">
-                💡 The debug log contains: input text, system prompt, OpenAI request/response, and processed output.
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                📁 Find the complete log file in your project&apos;s <code className="bg-gray-200 px-1 rounded">logs/</code> directory.
+                💡 Debug information shows the AI model response and how it was processed.
               </p>
             </div>
           </div>

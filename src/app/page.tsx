@@ -122,23 +122,6 @@ export default function GrammarTutor() {
     };
   }, [isLoading]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-        event.preventDefault();
-        if (text.trim() && !isLoading) {
-          handleCorrect();
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [text, isLoading, handleCorrect]);
-
   const handleCorrect = useCallback(async () => {
     if (!text.trim()) return;
 
@@ -180,6 +163,23 @@ export default function GrammarTutor() {
       setIsLoading(false);
     }
   }, [text, selectedModel, reasoningEffort, addStatusLog]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        if (text.trim() && !isLoading) {
+          handleCorrect();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [text, isLoading, handleCorrect]);
 
   const handleCancel = () => {
     if (eventSourceRef.current) {
