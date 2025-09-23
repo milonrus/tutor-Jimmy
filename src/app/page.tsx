@@ -54,7 +54,7 @@ export default function GrammarTutor() {
   const [statusLogs, setStatusLogs] = useState<StatusLogEntry[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [totalSteps, setTotalSteps] = useState(8);
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('low');
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('minimal');
   const abortControllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
