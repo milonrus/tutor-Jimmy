@@ -5,6 +5,7 @@ import { join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
 import { DEFAULT_MODEL } from '@/config/openai-models';
 import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
+import { checkRateLimit } from '@/lib/rateLimiting';
 import {
   Correction,
   CorrectionResponse,
@@ -14,6 +15,8 @@ import {
 interface CorrectionRequest {
   text: string;
   model?: string;
+  userId?: string;
+  isAnonymous?: boolean;
 }
 
 function findPositions(originalText: string, corrections: Correction[]): Correction[] {
@@ -60,32 +63,51 @@ export async function POST(request: NextRequest) {
       (async () => {
         try {
           const body = await request.json();
-          const { text, model }: CorrectionRequest = body;
+          const { text, model, userId, isAnonymous }: CorrectionRequest = body;
           const selectedModel = model || DEFAULT_MODEL;
-          const totalSteps = 8;
+          const totalSteps = 9; // Increased for rate limit check
 
-          // Step 1: Validation
-          controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Validating input text...', `Checking ${text.length} characters`)));
+          // Step 1: Rate limit check
+          if (!userId) {
+            controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Error: User ID is required', 'Authentication required')));
+            controller.close();
+            return;
+          }
+
+          if (isAnonymous) {
+            controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Checking rate limits...', 'Verifying request quota')));
+
+            const rateLimitResult = await checkRateLimit(userId, isAnonymous);
+
+            if (!rateLimitResult.allowed) {
+              controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Rate limit exceeded', `You've reached the limit of 3 requests per week. Sign up for unlimited access! Resets: ${rateLimitResult.resetTime.toISOString()}`)));
+              controller.close();
+              return;
+            }
+          }
+
+          // Step 2: Validation
+          controller.enqueue(encoder.encode(createStatusEvent(2, totalSteps, 'Validating input text...', `Checking ${text.length} characters`)));
 
           if (!text || typeof text !== 'string') {
-            controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Error: Invalid text input', 'Text is required and must be a string')));
+            controller.enqueue(encoder.encode(createStatusEvent(2, totalSteps, 'Error: Invalid text input', 'Text is required and must be a string')));
             controller.close();
             return;
           }
 
           if (!process.env.OPENAI_API_KEY) {
-            controller.enqueue(encoder.encode(createStatusEvent(1, totalSteps, 'Error: OpenAI API key not configured', 'Please check your environment variables')));
+            controller.enqueue(encoder.encode(createStatusEvent(2, totalSteps, 'Error: OpenAI API key not configured', 'Please check your environment variables')));
             controller.close();
             return;
           }
 
-          // Step 2: Loading prompt
-          controller.enqueue(encoder.encode(createStatusEvent(2, totalSteps, 'Loading grammar correction prompt...', 'Using cached template if available')));
+          // Step 3: Loading prompt
+          controller.enqueue(encoder.encode(createStatusEvent(3, totalSteps, 'Loading grammar correction prompt...', 'Using cached template if available')));
 
           const systemPrompt = await getGrammarCorrectionPrompt();
 
-          // Step 3: Logging request
-          controller.enqueue(encoder.encode(createStatusEvent(3, totalSteps, 'Preparing request...', `Model: ${selectedModel}`)));
+          // Step 4: Logging request
+          controller.enqueue(encoder.encode(createStatusEvent(4, totalSteps, 'Preparing request...', `Model: ${selectedModel}`)));
 
           await logDebugInfo({
             type: 'request',
@@ -94,11 +116,11 @@ export async function POST(request: NextRequest) {
             systemPrompt: systemPrompt.substring(0, 200) + '...'
           });
 
-          // Step 4: Connecting to OpenAI
-          controller.enqueue(encoder.encode(createStatusEvent(4, totalSteps, 'Connecting to OpenAI API...', 'Establishing secure connection')));
+          // Step 5: Connecting to OpenAI
+          controller.enqueue(encoder.encode(createStatusEvent(5, totalSteps, 'Connecting to OpenAI API...', 'Establishing secure connection')));
 
-          // Step 5: Sending to AI model
-          controller.enqueue(encoder.encode(createStatusEvent(5, totalSteps, 'Sending text to AI model for analysis...', `Processing with ${selectedModel} (optimized for structured JSON output)`)));
+          // Step 6: Sending to AI model
+          controller.enqueue(encoder.encode(createStatusEvent(6, totalSteps, 'Sending text to AI model for analysis...', `Processing with ${selectedModel} (optimized for structured JSON output)`)));
 
           const result = await generateObject({
             model: openai(selectedModel),
@@ -110,8 +132,8 @@ export async function POST(request: NextRequest) {
 
           const serializedResponse = JSON.stringify(result.object);
 
-          // Step 6: Receiving response
-          controller.enqueue(encoder.encode(createStatusEvent(6, totalSteps, 'Receiving response from OpenAI...', `Received ${serializedResponse.length} characters`)));
+          // Step 7: Receiving response
+          controller.enqueue(encoder.encode(createStatusEvent(7, totalSteps, 'Receiving response from OpenAI...', `Received ${serializedResponse.length} characters`)));
 
           await logDebugInfo({
             type: 'openai_response',
@@ -120,13 +142,13 @@ export async function POST(request: NextRequest) {
             usage: result.usage
           });
 
-          // Step 7: Parsing response
-          controller.enqueue(encoder.encode(createStatusEvent(7, totalSteps, 'Parsing correction suggestions...', 'Structured response validated')));
+          // Step 8: Parsing response
+          controller.enqueue(encoder.encode(createStatusEvent(8, totalSteps, 'Parsing correction suggestions...', 'Structured response validated')));
 
           const parsedResponse: CorrectionResponse = result.object;
 
-          // Step 8: Finalizing
-          controller.enqueue(encoder.encode(createStatusEvent(8, totalSteps, 'Calculating error positions...', `Found ${parsedResponse.corrections.length} corrections`)));
+          // Step 9: Finalizing
+          controller.enqueue(encoder.encode(createStatusEvent(9, totalSteps, 'Calculating error positions...', `Found ${parsedResponse.corrections.length} corrections`)));
 
           const correctionsWithPositions = findPositions(text, parsedResponse.corrections);
 
@@ -146,7 +168,7 @@ export async function POST(request: NextRequest) {
           });
 
           // Send final success status
-          controller.enqueue(encoder.encode(createStatusEvent(8, totalSteps, `Complete! Found ${correctionsWithPositions.length} corrections`, 'Grammar analysis finished successfully')));
+          controller.enqueue(encoder.encode(createStatusEvent(9, totalSteps, `Complete! Found ${correctionsWithPositions.length} corrections`, 'Grammar analysis finished successfully')));
 
           // Send the final result
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'result', data: response })}\n\n`));
@@ -164,7 +186,7 @@ export async function POST(request: NextRequest) {
             } : error
           });
 
-          controller.enqueue(encoder.encode(createStatusEvent(0, 8, 'Error: Failed to process grammar correction', error instanceof Error ? error.message : 'Unknown error')));
+          controller.enqueue(encoder.encode(createStatusEvent(0, 9, 'Error: Failed to process grammar correction', error instanceof Error ? error.message : 'Unknown error')));
           controller.close();
         }
       })();

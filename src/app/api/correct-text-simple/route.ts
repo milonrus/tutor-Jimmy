@@ -5,20 +5,13 @@ import OpenAI from 'openai';
 import { join } from 'path';
 import { writeFile, mkdir } from 'fs/promises';
 import { DEFAULT_MODEL, ReasoningEffort, getModelConfig } from '@/config/openai-models';
-import { getGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
-import { parseXmlCorrections } from '@/lib/xmlCorrectionParser';
 import { calculateCost, type TokenUsage, type CostBreakdown } from '@/lib/costCalculator';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { checkRateLimit } from '@/lib/rateLimiting';
-import './schema';
+import { analyzeDifferences } from '@/lib/diffAnalysis';
+import { getSimpleGrammarCorrectionPrompt } from '@/lib/grammarPrompt';
 
-const OPENAI_PROMPT_ID = process.env.OPENAI_PROMPT_ID ?? 'pmpt_68d1f6d23f388197946bfb143aa2fd1e00780713b8de1b8e';
-const OPENAI_PROMPT_VERSION = process.env.OPENAI_PROMPT_VERSION ?? '1';
-const OPENAI_PROMPT_VARIABLE_KEYS = (process.env.OPENAI_PROMPT_VARIABLE_KEYS ?? '')
-  .split(',')
-  .map(key => key.trim())
-  .filter(key => key.length > 0);
 
 interface CorrectionRequest {
   text: string;
@@ -28,24 +21,45 @@ interface CorrectionRequest {
   isAnonymous?: boolean;
 }
 
+interface Correction {
+  original: string;
+  corrected: string;
+  type: string;
+  explanation?: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+interface CorrectionResponse {
+  corrections: Correction[];
+  originalText: string;
+  xmlText: string;
+  debug?: {
+    model: string;
+    reasoningEffort?: string;
+    usage: unknown;
+    xmlResponse: string;
+    parsedCorrections: number;
+  };
+}
+
 
 async function logDebugInfo(data: Record<string, unknown>) {
   if (process.env.NODE_ENV === 'development') {
     try {
-      // Use /tmp directory for production compatibility
       const logsDir = join('/tmp', 'grammar-tutor-logs');
       await mkdir(logsDir, { recursive: true });
 
       const timestamp = new Date().toISOString();
       const logEntry = {
         timestamp,
+        type: 'simple_correction',
         ...data
       };
 
-      const logFile = join(logsDir, `grammar-correction-${new Date().toISOString().split('T')[0]}.log`);
+      const logFile = join(logsDir, `grammar-correction-simple-${new Date().toISOString().split('T')[0]}.log`);
       await writeFile(logFile, JSON.stringify(logEntry, null, 2) + '\n', { flag: 'a' });
     } catch (error) {
-      // In production or if file writing fails, just log to console
       console.error('Debug info (file write failed):', JSON.stringify(data, null, 2));
       console.error('Error details:', error);
     }
@@ -117,101 +131,47 @@ export async function POST(request: NextRequest) {
       ? (requestedEffortIsValid ? reasoningEffort : 'medium')
       : undefined;
 
-    const promptId = supportsReasoning ? OPENAI_PROMPT_ID?.trim() : undefined;
-    const promptVersion = supportsReasoning ? OPENAI_PROMPT_VERSION?.trim() : undefined;
-    const usePromptTemplate = Boolean(promptId);
-
-    const systemPrompt = await getGrammarCorrectionPrompt();
-
-    const availablePromptVariableValues: Record<string, string> = {
-      text,
-      instructions: systemPrompt,
-      reasoning_effort: resolvedReasoningEffort ?? 'medium'
-    };
-
-    const promptVariables = OPENAI_PROMPT_VARIABLE_KEYS.reduce<Record<string, string>>((acc, entry) => {
-      const [variableNameRaw, sourceKeyRaw] = entry.split(':');
-      const variableName = (variableNameRaw ?? '').trim();
-      const sourceKey = (sourceKeyRaw ?? variableNameRaw ?? '').trim();
-
-      if (!variableName) {
-        return acc;
-      }
-
-      const value = availablePromptVariableValues[sourceKey as keyof typeof availablePromptVariableValues];
-      if (typeof value === 'string') {
-        acc[variableName] = value;
-      }
-
-      return acc;
-    }, {});
-
-    const promptVariablesProvided = Object.keys(promptVariables).length > 0 ? promptVariables : undefined;
+    // Get the simple grammar correction prompt
+    const systemPrompt = await getSimpleGrammarCorrectionPrompt();
 
     await logDebugInfo({
       type: 'request',
       model: selectedModelId,
       reasoningEffort: resolvedReasoningEffort,
-      inputText: text,
-      systemPrompt: systemPrompt.substring(0, 200) + '...',
-      promptId: usePromptTemplate ? promptId : undefined,
-      promptVersion: usePromptTemplate ? promptVersion : undefined,
-      promptVariables: promptVariablesProvided ? Object.keys(promptVariablesProvided) : undefined
+      inputText: text.substring(0, 200) + '...',
+      method: 'simple_correction',
+      systemPrompt: systemPrompt.substring(0, 200) + '...'
     });
 
-    let xmlText = '';
+    let correctedText = '';
     let usage: unknown;
 
     if (supportsReasoning) {
       const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      // const promptVariables: Record<string, string> = {
-      //   text,
-      //   instructions: systemPrompt,
-      //   reasoning_effort: resolvedReasoningEffort ?? 'medium'
-      // };
-
-      const reasoningInputMessages = usePromptTemplate
-        ? [
-            {
-              role: 'user' as const,
-              content: [
-                {
-                  type: 'input_text' as const,
-                  text
-                }
-              ]
-            }
-          ]
-        : [
-            {
-              role: 'system' as const,
-              content: [
-                {
-                  type: 'input_text' as const,
-                  text: systemPrompt
-                }
-              ]
-            },
-            {
-              role: 'user' as const,
-              content: [
-                {
-                  type: 'input_text' as const,
-                  text: `Please analyze and correct the following text:\n\n${text}`
-                }
-              ]
-            }
-          ];
 
       const response = await client.responses.create({
         model: selectedModelId,
         reasoning: resolvedReasoningEffort ? { effort: resolvedReasoningEffort } : undefined,
-        prompt: usePromptTemplate ? {
-          id: promptId!,
-          ...(promptVersion ? { version: promptVersion } : {}),
-          variables: promptVariablesProvided
-        } : undefined,
-        input: reasoningInputMessages
+        input: [
+          {
+            role: 'system' as const,
+            content: [
+              {
+                type: 'input_text' as const,
+                text: systemPrompt
+              }
+            ]
+          },
+          {
+            role: 'user' as const,
+            content: [
+              {
+                type: 'input_text' as const,
+                text
+              }
+            ]
+          }
+        ]
       });
 
       type ResponseOutput = {
@@ -223,21 +183,20 @@ export async function POST(request: NextRequest) {
           }>;
         }>;
         usage?: unknown;
-        prompt_response?: unknown;
       };
 
       const responseData = JSON.parse(JSON.stringify(response)) as ResponseOutput;
 
       const aggregatedText = responseData.output_text ?? '';
       if (aggregatedText.trim().length > 0) {
-        xmlText = aggregatedText.trim();
+        correctedText = aggregatedText.trim();
       } else if (Array.isArray(responseData.output)) {
         const extractPartText = (part: unknown): string => {
           if (!part || typeof part !== 'object') {
             return '';
           }
 
-          const candidate = part as { type?: unknown; text?: unknown; content?: unknown; additional_text?: unknown };
+          const candidate = part as { type?: unknown; text?: unknown; content?: unknown };
           const { type } = candidate;
 
           const maybeText = (value: unknown) => typeof value === 'string' ? value : '';
@@ -251,8 +210,6 @@ export async function POST(request: NextRequest) {
             if (Array.isArray(candidate.content)) {
               return candidate.content.map(extractPartText).join('');
             }
-
-            return maybeText(candidate.additional_text);
           }
 
           if (Array.isArray(candidate.content)) {
@@ -267,30 +224,23 @@ export async function POST(request: NextRequest) {
           .map(part => extractPartText(part))
           .join('')
           .trim();
-        xmlText = fallback;
+        correctedText = fallback;
       }
 
       usage = responseData.usage;
 
       await logDebugInfo({
-        type: 'openai_raw_response',
-        model: selectedModelId,
-        reasoningEffort: resolvedReasoningEffort,
-        response: responseData
-      });
-
-      await logDebugInfo({
         type: 'openai_response',
         model: selectedModelId,
         reasoningEffort: resolvedReasoningEffort,
-        response: xmlText,
+        correctedText: correctedText.substring(0, 200) + '...',
         usage: responseData.usage
       });
     } else {
       const result = await generateText({
         model: openai(selectedModelId),
         system: systemPrompt,
-        prompt: `Please analyze and correct the following text:\n\n${text}`,
+        prompt: text,
         providerOptions: resolvedReasoningEffort ? {
           openai: {
             reasoningEffort: resolvedReasoningEffort
@@ -298,30 +248,31 @@ export async function POST(request: NextRequest) {
         } : undefined,
       });
 
-      xmlText = result.text.trim();
+      correctedText = result.text.trim();
       usage = result.usage;
 
       await logDebugInfo({
         type: 'openai_response',
         model: selectedModelId,
         reasoningEffort: resolvedReasoningEffort,
-        response: xmlText,
+        correctedText: correctedText.substring(0, 200) + '...',
         usage: result.usage
       });
     }
 
-    const parsedResult = parseXmlCorrections(xmlText);
+    // Analyze differences between original and corrected text
+    const diffResult = analyzeDifferences(text, correctedText);
 
-    const response = {
-      corrections: parsedResult.corrections,
-      originalText: parsedResult.originalText,
-      xmlText: xmlText,
+    const response: CorrectionResponse = {
+      corrections: diffResult.corrections,
+      originalText: text,
+      xmlText: correctedText, // Store corrected text in xmlText field for consistency
       debug: process.env.NODE_ENV === 'development' ? {
         model: selectedModelId,
         reasoningEffort: resolvedReasoningEffort,
         usage,
-        xmlResponse: xmlText,
-        parsedCorrections: parsedResult.corrections.length
+        xmlResponse: correctedText,
+        parsedCorrections: diffResult.corrections.length
       } : undefined
     };
 
@@ -329,14 +280,6 @@ export async function POST(request: NextRequest) {
     let costBreakdown: CostBreakdown | null = null;
     try {
       if (usage && typeof usage === 'object' && usage !== null) {
-        // Debug log the usage object structure
-        await logDebugInfo({
-          type: 'usage_object_debug',
-          usage,
-          model: selectedModelId,
-          usageKeys: Object.keys(usage)
-        });
-
         const tokenUsage = usage as TokenUsage;
         costBreakdown = calculateCost(tokenUsage, selectedModelId);
 
@@ -356,19 +299,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Save to Firestore if user is authenticated (save all attempts, not just those with corrections)
+    // Save to Firestore if user is authenticated
     if (userId) {
       try {
         const firestoreData = {
           userId,
           originalText: text,
-          correctedText: xmlText,
-          corrections: parsedResult.corrections,
+          correctedText,
+          corrections: diffResult.corrections,
           model: selectedModelId,
+          correctionMethod: 'simple_diff',
           ...(resolvedReasoningEffort && { reasoningEffort: resolvedReasoningEffort }),
           timestamp: serverTimestamp(),
           createdAt: serverTimestamp(),
-          // Add cost and token data
           ...(costBreakdown && {
             inputTokens: costBreakdown.inputTokens,
             outputTokens: costBreakdown.outputTokens,
@@ -384,7 +327,7 @@ export async function POST(request: NextRequest) {
         await logDebugInfo({
           type: 'firestore_save',
           userId,
-          correctionsCount: parsedResult.corrections.length,
+          correctionsCount: diffResult.corrections.length,
           costBreakdown,
           saved: true
         });
@@ -395,25 +338,19 @@ export async function POST(request: NextRequest) {
           error: firestoreError instanceof Error ? firestoreError.message : 'Unknown Firestore error'
         });
       }
-    } else {
-      await logDebugInfo({
-        type: 'firestore_skip',
-        reason: 'No userId provided',
-        userId: userId || 'undefined'
-      });
     }
 
     await logDebugInfo({
       type: 'final_response',
-      response
+      correctionsFound: diffResult.corrections.length,
+      method: 'simple_diff'
     });
 
     return NextResponse.json(response);
 
   } catch (error) {
-    console.error('Grammar correction API error:', error);
+    console.error('Simple grammar correction API error:', error);
 
-    // Safe logging that won't cause additional errors
     try {
       await logDebugInfo({
         type: 'error',
@@ -427,7 +364,6 @@ export async function POST(request: NextRequest) {
       console.error('Failed to log error:', logError);
     }
 
-    // More specific error messages based on error type
     let errorMessage = 'Failed to process grammar correction';
     let statusCode = 500;
 

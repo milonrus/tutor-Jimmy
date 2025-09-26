@@ -8,6 +8,9 @@ import {
   createUserWithEmailAndPassword,
   signInWithPopup,
   GoogleAuthProvider,
+  signInAnonymously,
+  linkWithCredential,
+  EmailAuthProvider,
   signOut,
   AuthError
 } from 'firebase/auth';
@@ -16,9 +19,12 @@ import { auth } from '@/lib/firebase';
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  isAnonymous: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
+  linkAnonymousWithEmail: (email: string, password: string) => Promise<void>;
+  linkAnonymousWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -39,15 +45,35 @@ interface AuthProviderProps {
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        if (isLoggingOut) {
+          // User explicitly logged out - don't create anonymous user
+          setUser(null);
+          setLoading(false);
+          setIsLoggingOut(false);
+        } else {
+          // No user signed in, create anonymous user
+          try {
+            await signInAnonymously(auth);
+            // The auth state change will fire again with the anonymous user
+          } catch (error) {
+            console.error('Failed to sign in anonymously:', error);
+            setUser(null);
+            setLoading(false);
+          }
+        }
+      } else {
+        setUser(user);
+        setLoading(false);
+      }
     });
 
     return unsubscribe;
-  }, []);
+  }, [isLoggingOut]);
 
   const login = async (email: string, password: string): Promise<void> => {
     try {
@@ -77,11 +103,49 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   };
 
+  const linkAnonymousWithEmail = async (email: string, password: string): Promise<void> => {
+    try {
+      if (!user || !user.isAnonymous) {
+        throw new Error('No anonymous user to link');
+      }
+      const credential = EmailAuthProvider.credential(email, password);
+      await linkWithCredential(user, credential);
+    } catch (error) {
+      const authError = error as AuthError;
+      if (authError.code === 'auth/email-already-in-use') {
+        throw new Error('An account with this email already exists. Please sign in instead.');
+      }
+      throw new Error(getAuthErrorMessage(authError.code));
+    }
+  };
+
+  const linkAnonymousWithGoogle = async (): Promise<void> => {
+    try {
+      if (!user || !user.isAnonymous) {
+        throw new Error('No anonymous user to link');
+      }
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential) {
+        await linkWithCredential(user, credential);
+      }
+    } catch (error) {
+      const authError = error as AuthError;
+      if (authError.code === 'auth/credential-already-in-use') {
+        throw new Error('This Google account is already linked to another account. Please sign in instead.');
+      }
+      throw new Error(getAuthErrorMessage(authError.code));
+    }
+  };
+
   const logout = async (): Promise<void> => {
     try {
+      setIsLoggingOut(true);
       await signOut(auth);
     } catch (error) {
       console.error('Error signing out:', error);
+      setIsLoggingOut(false);
       throw new Error('Failed to sign out');
     }
   };
@@ -89,9 +153,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const value: AuthContextType = {
     user,
     loading,
+    isAnonymous: user?.isAnonymous || false,
     login,
     signup,
     signInWithGoogle,
+    linkAnonymousWithEmail,
+    linkAnonymousWithGoogle,
     logout
   };
 

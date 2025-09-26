@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ErrorHighlight from '@/components/ErrorHighlight';
 import DebugDisplay from '@/components/DebugDisplay';
-import ModelSelector from '@/components/ModelSelector';
+import ModelSelector, { type CorrectionMode } from '@/components/ModelSelector';
 import AuthButtons from '@/components/AuthButtons';
 import { DEFAULT_MODEL, OPENAI_MODELS, ReasoningEffort } from '@/config/openai-models';
 import { useAuth } from '@/contexts/AuthContext';
+import { getRateLimitStatus, type RateLimitResult, formatTimeUntilReset } from '@/lib/rateLimiting';
 
 interface Correction {
   original: string;
@@ -48,16 +49,19 @@ interface StatusLogEntry {
 }
 
 export default function GrammarTutor() {
-  const { user } = useAuth();
+  const { user, isAnonymous } = useAuth();
   const [text, setText] = useState('');
   const [correctionData, setCorrectionData] = useState<CorrectionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [selectedModel, setSelectedModel] = useState(user ? DEFAULT_MODEL : 'gpt-5-nano');
   const [elapsedTime, setElapsedTime] = useState(0);
   const [statusLogs, setStatusLogs] = useState<StatusLogEntry[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [totalSteps, setTotalSteps] = useState(8);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('minimal');
+  const [correctionMode, setCorrectionMode] = useState<CorrectionMode>('quick');
+  const [rateLimitStatus, setRateLimitStatus] = useState<RateLimitResult | null>(null);
+  const [isLoadingExplanations, setIsLoadingExplanations] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -105,8 +109,35 @@ export default function GrammarTutor() {
     return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
+  // Update model when authentication state changes
   useEffect(() => {
-    if (isLoading) {
+    if (!user && selectedModel !== 'gpt-5-nano') {
+      setSelectedModel('gpt-5-nano');
+    } else if (user && selectedModel === 'gpt-5-nano') {
+      setSelectedModel(DEFAULT_MODEL);
+    }
+  }, [user, selectedModel]);
+
+  // Load rate limit status for anonymous users
+  useEffect(() => {
+    const loadRateLimitStatus = async () => {
+      if (user?.uid && isAnonymous) {
+        try {
+          const status = await getRateLimitStatus(user.uid, true);
+          setRateLimitStatus(status);
+        } catch (error) {
+          console.error('Failed to load rate limit status:', error);
+        }
+      } else {
+        setRateLimitStatus(null);
+      }
+    };
+
+    loadRateLimitStatus();
+  }, [user?.uid, isAnonymous]);
+
+  useEffect(() => {
+    if (isLoading || isLoadingExplanations) {
       setElapsedTime(0);
       timerRef.current = setInterval(() => {
         setElapsedTime(prev => prev + 1);
@@ -123,7 +154,7 @@ export default function GrammarTutor() {
         clearInterval(timerRef.current);
       }
     };
-  }, [isLoading]);
+  }, [isLoading, isLoadingExplanations]);
 
   const handleCorrect = useCallback(async () => {
     if (!text.trim()) return;
@@ -138,7 +169,8 @@ export default function GrammarTutor() {
       addStatusLog({ step: 2, totalSteps: 3, message: 'Processing...', details: 'AI is analyzing your text for grammar errors' }, 'info');
 
       const supportsReasoning = Boolean(OPENAI_MODELS[selectedModel]?.supportsReasoning);
-      const response = await fetch('/api/correct-text', {
+      const apiEndpoint = correctionMode === 'quick' ? '/api/correct-text-simple' : '/api/correct-text';
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -147,11 +179,29 @@ export default function GrammarTutor() {
           text,
           model: selectedModel,
           reasoningEffort: supportsReasoning ? reasoningEffort : undefined,
-          userId: user?.uid
+          userId: user?.uid,
+          isAnonymous
         }),
       });
 
       if (!response.ok) {
+        if (response.status === 429) {
+          // Rate limit exceeded
+          const errorData = await response.json();
+          addStatusLog({
+            step: 0,
+            totalSteps: 3,
+            message: 'Rate limit exceeded',
+            details: errorData.message || 'You have exceeded your request limit'
+          }, 'error');
+
+          // Refresh rate limit status
+          if (user?.uid && isAnonymous) {
+            const status = await getRateLimitStatus(user.uid, true);
+            setRateLimitStatus(status);
+          }
+          return;
+        }
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
@@ -160,13 +210,62 @@ export default function GrammarTutor() {
 
       addStatusLog({ step: 3, totalSteps: 3, message: 'Complete!', details: `Found ${data.corrections.length} corrections` }, 'success');
 
+      // Update rate limit status after successful request
+      if (user?.uid && isAnonymous) {
+        const status = await getRateLimitStatus(user.uid, true);
+        setRateLimitStatus(status);
+      }
+
     } catch (error) {
       console.error('Error correcting text:', error);
       addStatusLog({ step: 0, totalSteps: 3, message: 'Error', details: error instanceof Error ? error.message : 'Unknown error occurred' }, 'error');
     } finally {
       setIsLoading(false);
     }
-  }, [text, selectedModel, reasoningEffort, addStatusLog, user?.uid]);
+  }, [text, selectedModel, reasoningEffort, correctionMode, addStatusLog, user?.uid, isAnonymous]);
+
+  const handleExplainCorrections = useCallback(async () => {
+    if (!correctionData || correctionData.corrections.length === 0 || isLoadingExplanations) {
+      return;
+    }
+
+    setIsLoadingExplanations(true);
+
+    try {
+      const response = await fetch('/api/explain-corrections', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          originalText: correctionData.originalText,
+          correctedText: correctionData.xmlText,
+          corrections: correctionData.corrections,
+          model: selectedModel,
+          reasoningEffort,
+          userId: user?.uid,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const explanationData = await response.json();
+
+      // Update the correction data with explanations
+      setCorrectionData(prev => prev ? {
+        ...prev,
+        corrections: explanationData.corrections
+      } : null);
+
+    } catch (error) {
+      console.error('Error getting explanations:', error);
+      // Could add toast notification here
+    } finally {
+      setIsLoadingExplanations(false);
+    }
+  }, [correctionData, selectedModel, reasoningEffort, user?.uid, isLoadingExplanations]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -237,15 +336,44 @@ export default function GrammarTutor() {
                 }}
                 reasoningEffort={reasoningEffort}
                 onReasoningChange={setReasoningEffort}
+                correctionMode={correctionMode}
+                onCorrectionModeChange={setCorrectionMode}
+                isAuthenticated={!!user}
               />
             </div>
           </div>
 
           <div className="space-y-4">
+            {/* Rate Limit Status for Anonymous Users */}
+            {isAnonymous && rateLimitStatus && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium text-yellow-800">
+                      {rateLimitStatus.remainingRequests > 0
+                        ? `${rateLimitStatus.remainingRequests} requests remaining this week`
+                        : 'Weekly request limit reached'
+                      }
+                    </h3>
+                    {rateLimitStatus.remainingRequests === 0 && (
+                      <p className="text-sm text-yellow-700 mt-1">
+                        Resets in {formatTimeUntilReset(rateLimitStatus.resetTime)}
+                      </p>
+                    )}
+                  </div>
+                  {rateLimitStatus.remainingRequests <= 1 && (
+                    <div className="text-sm text-yellow-700">
+                      <span className="font-medium">Sign up for unlimited requests!</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center gap-4">
               <button
                 onClick={handleCorrect}
-                disabled={!text.trim() || isLoading}
+                disabled={!text.trim() || isLoading || (isAnonymous && rateLimitStatus?.remainingRequests === 0)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {isLoading && (
@@ -253,6 +381,19 @@ export default function GrammarTutor() {
                 )}
                 {isLoading ? 'Processing...' : 'Correct Grammar'}
               </button>
+
+              {correctionData && correctionMode === 'quick' && correctionData.corrections.length > 0 && (
+                <button
+                  onClick={handleExplainCorrections}
+                  disabled={isLoadingExplanations}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                >
+                  {isLoadingExplanations && (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                  )}
+                  {isLoadingExplanations ? 'Adding explanations...' : 'Get Detailed Explanations'}
+                </button>
+              )}
 
               {isLoading && (
                 <>
@@ -355,7 +496,12 @@ export default function GrammarTutor() {
 
             <div className="p-4 bg-gray-50 rounded-lg mb-6">
               <h3 className="font-semibold text-gray-700 mb-3">Text with Highlighted Errors:</h3>
-              <ErrorHighlight text={correctionData.originalText || text} corrections={correctionData.corrections || []} showCorrections={true} />
+              <ErrorHighlight
+                text={correctionData.originalText || text}
+                corrections={correctionData.corrections || []}
+                showCorrections={true}
+                isLoadingExplanations={isLoadingExplanations}
+              />
             </div>
 
             {/* Debug Information */}

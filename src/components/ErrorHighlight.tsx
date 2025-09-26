@@ -15,14 +15,15 @@ interface ErrorHighlightProps {
   text: string;
   corrections: Correction[];
   showCorrections?: boolean;
+  isLoadingExplanations?: boolean;
 }
 
-export default function ErrorHighlight({ text, corrections, showCorrections = false }: ErrorHighlightProps) {
+export default function ErrorHighlight({ text, corrections, showCorrections = false, isLoadingExplanations = false }: ErrorHighlightProps) {
   const [hoveredCorrection, setHoveredCorrection] = useState<Correction | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
 
   const handleMouseEnter = (correction: Correction, event: React.MouseEvent) => {
-    if (correction.explanation) {
+    if (correction.explanation || isLoadingExplanations) {
       setHoveredCorrection(correction);
       setTooltipPosition({ x: event.clientX, y: event.clientY });
     }
@@ -164,7 +165,7 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
         {renderTextWithHighlights()}
       </div>
 
-      {hoveredCorrection && hoveredCorrection.explanation && (
+      {hoveredCorrection && (hoveredCorrection.explanation || isLoadingExplanations) && (
         <div
           className="fixed z-50 bg-gray-900 text-white p-3 rounded-lg shadow-lg max-w-xs text-sm"
           style={{
@@ -181,7 +182,16 @@ export default function ErrorHighlight({ text, corrections, showCorrections = fa
             <span className="text-green-300">{hoveredCorrection.corrected}</span>
           </div>
           <div className="text-gray-300">
-            {hoveredCorrection.explanation}
+            {hoveredCorrection.explanation ? (
+              hoveredCorrection.explanation
+            ) : isLoadingExplanations ? (
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-3 w-3 border-2 border-gray-300 border-t-transparent"></div>
+                <span className="text-gray-400">Loading explanation...</span>
+              </div>
+            ) : (
+              'Click "Get Detailed Explanations" for more info'
+            )}
           </div>
         </div>
       )}

@@ -17,6 +17,20 @@ service cloud.firestore {
         ]);
     }
 
+    // Rules for rateLimits collection
+    match /rateLimits/{document} {
+      // Allow authenticated users (including anonymous) to read/write their own rate limit data
+      allow read, write: if request.auth != null &&
+        resource.data.identifier == request.auth.uid;
+
+      // Allow creation of new rate limit documents
+      allow create: if request.auth != null &&
+        request.resource.data.identifier == request.auth.uid &&
+        request.resource.data.keys().hasAll([
+          'identifier', 'requestCount', 'firstRequestAt', 'lastRequestAt', 'resetAt'
+        ]);
+    }
+
     // Deny all other access
     match /{document=**} {
       allow read, write: if false;

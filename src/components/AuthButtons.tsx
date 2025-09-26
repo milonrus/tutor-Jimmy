@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { signInAnonymously } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 import AuthModal from './AuthModal';
 import CorrectionHistory from './CorrectionHistory';
 
 export default function AuthButtons() {
-  const { user, logout } = useAuth();
+  const { user, isAnonymous, logout } = useAuth();
   const [showModal, setShowModal] = useState(false);
   const [modalMode, setModalMode] = useState<'login' | 'signup'>('login');
   const [showHistory, setShowHistory] = useState(false);
@@ -29,7 +31,16 @@ export default function AuthButtons() {
     }
   };
 
-  if (user) {
+  const handleContinueAsGuest = async () => {
+    try {
+      await signInAnonymously(auth);
+    } catch (error) {
+      console.error('Error signing in anonymously:', error);
+    }
+  };
+
+  // Show authenticated user interface (not anonymous)
+  if (user && !isAnonymous) {
     return (
       <>
         <div className="flex items-center gap-4">
@@ -58,9 +69,16 @@ export default function AuthButtons() {
     );
   }
 
+  // Show login/signup buttons (logged out or no user)
   return (
     <>
       <div className="flex items-center gap-3">
+        <button
+          onClick={handleContinueAsGuest}
+          className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+        >
+          Continue as Guest
+        </button>
         <button
           onClick={handleLogin}
           className="px-4 py-2 text-blue-600 hover:text-blue-700 transition-colors"
